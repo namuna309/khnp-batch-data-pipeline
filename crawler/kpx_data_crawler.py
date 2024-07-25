@@ -13,16 +13,14 @@ load_dotenv()
 
 DATA_PORTAL_KEY_ENC = unquote(os.environ.get('DATA_PORTAL_KEY_ENC'))
 plants = ['WS', 'KR', 'YK', 'UJ', 'SU'] # WS : 월성, KR : 고리, YK : 한빛, UJ : 한울, SU : 새울
-base_url = 'http://data.khnp.co.kr/environ/service/realtime/'
-kinds = ['pwr', 'weather', 'air', 'radiorate', 'inoutwater', 'wastewater']
+base_url = 'https://openapi.kpx.or.kr/openapi/sukub5mMaxDatetime/getSukub5mMaxDatetime/'
 
 # 데이터 요청 함수
-def request_data(kind, plant):
-    params ={'serviceKey' : DATA_PORTAL_KEY_ENC, 'genName' : plant }
+def request_data():
+    params ={'serviceKey' : DATA_PORTAL_KEY_ENC}
 
     for try_cnt in range(10):
-        print(base_url + kind)
-        res = requests.get(base_url + kind, params=params)
+        res = requests.get(base_url, params=params)
 
         if res.status_code == 200:
             xml_text = res.text
@@ -38,20 +36,20 @@ def request_data(kind, plant):
     return 0, False
     
 
-for kind in kinds:
-    # 데이터 가져오기    
-    power_df, is_success = request_data(kind, plants[0])
 
-    if is_success:
-        # csv파일로 저장
-        now = datetime.now()
-        csv_file_path = f'\csv\{kind}\\'
-        csv_dir = os.getcwd() + csv_file_path
+# 데이터 가져오기    
+sukub_df, is_success = request_data()
+
+if is_success:
+    # csv파일로 저장
+    now = datetime.now()
+    csv_file_path = f'\csv\sukub\\'
+    csv_dir = os.getcwd() + csv_file_path
         
-        # csv 저장할 경로가 있는지 확인 후 없으면 생성
-        if not os.path.isdir(csv_dir):
-            os.makedirs(csv_dir, exist_ok=True)
+    # csv 저장할 경로가 있는지 확인 후 없으면 생성
+    if not os.path.isdir(csv_dir):
+        os.makedirs(csv_dir, exist_ok=True)
 
-        # csv 파일 저장    
-        file_name = now.strftime('%Y-%m-%d_%H') + f'_{kind}.csv'
-        power_df.to_csv('.' + csv_file_path + file_name, encoding='cp949')
+    # csv 파일 저장    
+    file_name = now.strftime('%Y-%m-%d_%H') + f'_sukub.csv'
+    sukub_df.to_csv('.' + csv_file_path + file_name, encoding='cp949')
