@@ -24,30 +24,42 @@ class DataCrawler:
     def request_data(self, url, params):
         for try_cnt in range(10):
             res = requests.get(url, params=params)
-            print(res.url)
             if res.status_code == 200:
                 xml_text = res.text
                 try:
-                    return pd.read_xml(StringIO(xml_text), xpath='.//item'), True
+                    xml_to_df = pd.read_xml(StringIO(xml_text), xpath='.//item')
+                    return xml_to_df, None
                 except Exception as e:
-                    print(f"Error parsing XML: {e}")
-                    return 0, False
+                    log_message = f"Error parsing XML: {e}"
+                    return 0, log_message
             else:
-                try_cnt += 1
                 print('Request failed, retrying in 3 seconds')
                 sleep(3)
-        return 0, False
+        log_message = f"Failed to fetch data after 10 retries for URL: {url}"
+        return 0, log_message
 
     def save_to_s3(self, df, file_path):
-        now = datetime.now()
-        file_name = '/' + now.strftime('%Y-%m-%d_%H') + f'_{file_path}.csv'
-        file = df.to_csv(encoding='cp949')
-        s3_res = self.s3_client.put_object(
-            Body=file,
-            Bucket=self.s3_bucket_name,
-            Key=file_path + file_name
-        )
-        return s3_res
+        now = datetime.now().strftime('%Y-%m-%d_%H')
+        file_name = f'/{now}.csv'
+        file = df.to_csv().encode('cp949')
+        try:
+            s3_res = self.s3_client.put_object(
+                Body=file,
+                Bucket=self.s3_bucket_name,
+                Key=file_path + file_name
+            )
+            return None
+        except Exception as e:
+            log_message = f"Error saving data to S3 bucket {self.s3_bucket_name}: {e}"
+            return log_message
+
+    def log_result(self, message):
+        log_file_path = 'log/cralwer.log'
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_message = f"{self.s3_bucket_name} [{now}] {message}\n"
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        with open(log_file_path, 'a') as log_file:
+            log_file.write(log_message)
 
 
 class KHNPCrawler(DataCrawler):
@@ -61,10 +73,17 @@ class KHNPCrawler(DataCrawler):
         for kind in self.kinds:
             for plant in self.plants:
                 params = {'serviceKey': self.data_portal_key_enc, 'genName': plant}
-                df, is_success = self.request_data(self.base_url + kind, params)
-                if is_success:
-                    file_path = f'{kind}_{plant}'
-                    self.save_to_s3(df, file_path)
+                df, log_message = self.request_data(self.base_url + kind, params)
+                if log_message:
+                    log_message = f'[Kind: {kind} GenName: {plant}]' + ' ' + '[Requesting data]' + ' ' + log_message
+                    self.log_result(log_message)
+                else:
+                    file_path = f'{kind}/{plant}'
+                    save_to_res = self.save_to_s3(df, file_path)
+                    if save_to_res:
+                        log_message = f'[Kind: {kind} GenName: {plant}]' + ' ' + '[Saving to S3]' + ' ' + log_message 
+                        self.log_result(log_message)
+                    
 
 
 class KPXCrawler(DataCrawler):
@@ -74,10 +93,16 @@ class KPXCrawler(DataCrawler):
 
     def crawl_data(self):
         params = {'serviceKey': self.data_portal_key_enc}
-        df, is_success = self.request_data(self.base_url, params)
-        if is_success:
+        df, log_message = self.request_data(self.base_url, params)
+        if log_message:
+            log_message = '[Requesting data]' + ' ' + log_message
+            self.log_result(log_message) 
+        else:
             file_path = 'sukub'
-            self.save_to_s3(df, file_path)
+            save_to_res = self.save_to_s3(df, file_path)
+            if save_to_res:
+                log_message = '[Saving to S3]' + ' ' + log_message 
+                self.log_result(log_message)
 
 
 if __name__ == "__main__":
@@ -91,4 +116,4 @@ if __name__ == "__main__":
     kpx_crawler = KPXCrawler(AWS_ACCESS_KEY, AWS_SECRET_KEY, DATA_PORTAL_KEY_ENC, S3_REGION)
 
     khnp_crawler.crawl_data()
-    # kpx_crawler.crawl_data()
+    kpx_crawler.crawl_data()
