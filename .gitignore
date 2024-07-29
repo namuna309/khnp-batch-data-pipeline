@@ -14,3 +14,6 @@ pip-selfcheck.json
 
 # 환경변수
 .env
+
+*.iml
+*.idea

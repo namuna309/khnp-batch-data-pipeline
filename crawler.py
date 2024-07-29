@@ -7,6 +7,8 @@ from urllib.parse import unquote  # URL 디코딩을 위한 라이브러리
 from datetime import datetime  # 날짜 및 시간 처리를 위한 라이브러리
 from io import StringIO  # 문자열을 파일처럼 다루기 위한 라이브러리
 import boto3  # AWS SDK for Python
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 # 데이터 크롤링 및 S3 저장을 위한 기본 클래스
 class DataCrawler:
@@ -23,27 +25,33 @@ class DataCrawler:
             aws_secret_access_key=self.aws_secret_key,
             region_name=s3_region
         )
+        self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0'}
 
     # 데이터를 요청하는 메서드
     def request_data(self, url, params):
-        for try_cnt in range(10):  # 최대 10번 시도
-            res = requests.get(url, params=params)
-            if res.status_code == 200:  # HTTP 응답 코드가 200(성공)인 경우
+        max_retries = 10
+        for try_cnt in range(max_retries):  # 최대 10번 시도
+            try:
+                res = requests.get(url, params=params, headers=self.headers)
                 xml_text = res.text  # 응답 텍스트(XML 형식)
-                try:
-                    # XML 텍스트를 데이터프레임으로 변환
-                    xml_to_df = pd.read_xml(StringIO(xml_text), xpath='.//item')
-                    return xml_to_df, None  # 데이터프레임과 성공 메시지 반환
-                except Exception as e:
-                    # XML 파싱 중 에러 발생 시 로그 메시지 생성
-                    log_message = f"Error parsing XML: {e}"
-                    return 0, log_message  # 에러 메시지 반환
-            else:
-                print('Request failed, retrying in 3 seconds')  # 요청 실패 시 재시도 메시지 출력
-                sleep(3)  # 3초 대기
-        # 최대 재시도 횟수 초과 시 실패 메시지 생성
-        log_message = f"Failed to fetch data after 10 retries for URL: {url}"
-        return 0, log_message  # 실패 메시지 반환
+                break
+            except Exception as e:
+                print(e)
+                print(f'Request failed, retrying in 3 seconds. Requesting count: {try_cnt + 1} for URL: {url} {params}')  # 요청 실패 시 재시도 메시지 출력
+        else:    
+            # 최대 재시도 횟수 초과 시 실패 메시지 생성
+            log_message = f"Failed to fetch data after 10 retries for URL: {url}"
+            return 0, log_message  # 실패 메시지 반환
+    
+        try:
+            # XML 텍스트를 데이터프레임으로 변환
+            xml_to_df = pd.read_xml(StringIO(xml_text), xpath='.//item')
+            res.close()
+            return xml_to_df, None  # 데이터프레임과 성공 메시지 반환
+        except Exception as e:
+            # XML 파싱 중 에러 발생 시 로그 메시지 생성
+            log_message = f"Error parsing XML: {e}"
+            return 0, log_message  # 에러 메시지 반환
 
     # 데이터를 S3에 저장하는 메서드
     def save_to_s3(self, df, file_path):
@@ -85,23 +93,32 @@ class KHNPCrawler(DataCrawler):
         self.kinds = ['pwr', 'weather', 'air', 'radiorate', 'inoutwater', 'wastewater']  # 데이터 종류 리스트
         self.base_url = 'http://data.khnp.co.kr/environ/service/realtime/'  # 기본 URL
 
-    # 데이터를 크롤링하는 메서드
+    def fetch_and_process(self, kind, plant):
+        params = {'serviceKey': self.data_portal_key_enc, 'genName': plant}  # 요청 파라미터 설정
+        df, log_message = self.request_data(self.base_url + kind, params)  # 데이터 요청
+        if log_message:  # 요청 실패 시
+            # 로그 메시지에 추가 정보 포함
+            log_message = f'[Kind: {kind} GenName: {plant}] [Requesting data] {log_message}'
+            self.log_result(log_message)  # 로그 기록
+        else:
+            file_path = f'{kind}/{plant}'  # S3 파일 경로 설정
+            save_to_res = self.save_to_s3(df, file_path)  # 데이터 저장
+            if save_to_res:  # 저장 실패 시
+                # 로그 메시지에 추가 정보 포함
+                log_message = f'[Kind: {kind} GenName: {plant}] [Saving to S3] {log_message}'
+                self.log_result(log_message)  # 로그 기록
+
     def crawl_data(self):
-        for kind in self.kinds:  # 각 데이터 종류에 대해
-            for plant in self.plants:  # 각 발전소에 대해
-                params = {'serviceKey': self.data_portal_key_enc, 'genName': plant}  # 요청 파라미터 설정
-                df, log_message = self.request_data(self.base_url + kind, params)  # 데이터 요청
-                if log_message:  # 요청 실패 시
-                    # 로그 메시지에 추가 정보 포함
-                    log_message = f'[Kind: {kind} GenName: {plant}] [Requesting data] {log_message}'
-                    self.log_result(log_message)  # 로그 기록
-                else:
-                    file_path = f'{kind}/{plant}'  # S3 파일 경로 설정
-                    save_to_res = self.save_to_s3(df, file_path)  # 데이터 저장
-                    if save_to_res:  # 저장 실패 시
-                        # 로그 메시지에 추가 정보 포함
-                        log_message = f'[Kind: {kind} GenName: {plant}] [Saving to S3] {log_message}'
-                        self.log_result(log_message)  # 로그 기록
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            for kind in self.kinds:  # 각 데이터 종류에 대해
+                for plant in self.plants:  # 각 발전소에 대해
+                    futures.append(executor.submit(self.fetch_and_process, kind, plant))
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()  # 결과를 가져옴으로써 예외를 발생시킴
+                except Exception as e:
+                    print(f"Error: {e}")
 
 # 한국전력거래소 데이터를 크롤링하는 클래스
 class KPXCrawler(DataCrawler):
